@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from typing import List
 
 import numpy as np
-from uav_dynamics import Quadrotor, QuadrotorParams, GustParams, PDGains, DisturbanceEvent
+from src.dataset.uav_dynamics import Quadrotor, QuadrotorParams, GustParams, PDGains, DisturbanceEvent
 
 
 @dataclass

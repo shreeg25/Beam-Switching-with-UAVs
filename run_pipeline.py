@@ -67,7 +67,7 @@ def save_checkpoint(
     """Persist model weights, optimizer/trainer state, and metadata to disk."""
     checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
     
-    # Extract model state dict if PyTorch module, else custom weights
+    # Extract model state dict cleanly
     if hasattr(model, "state_dict"):
         model_state = model.state_dict()
     elif hasattr(model, "weights"):
@@ -75,12 +75,21 @@ def save_checkpoint(
     else:
         model_state = getattr(model, "__dict__", {})
 
+    # Safely extract trainer state without dragging the unpicklable snnTorch model object with it
+    if hasattr(trainer, "state_dict"):
+        trainer_state = trainer.state_dict()
+    else:
+        # Shallow copy the dict to avoid modifying the live trainer instance
+        trainer_state = dict(getattr(trainer, "__dict__", {}))
+        # Strip out the raw model reference to prevent surrogate gradient pickling errors
+        trainer_state.pop("model", None)
+
     checkpoint = {
         "epoch": epoch,
         "model_state": model_state,
         "arch_config": arch_config.__dict__ if hasattr(arch_config, "__dict__") else dict(arch_config),
         "rstdp_config": rstdp_config.__dict__ if hasattr(rstdp_config, "__dict__") else dict(rstdp_config),
-        "trainer_state": getattr(trainer, "state_dict", lambda: getattr(trainer, "__dict__", {}))(),
+        "trainer_state": trainer_state,
         "metrics": metrics or {},
         "timestamp": time.time(),
     }

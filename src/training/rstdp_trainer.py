@@ -57,40 +57,24 @@ from src.dataset.channel_model import ChannelParams
 
 @dataclass
 class RSTDPConfig:
-    alpha: float = 1.0      # weight on delta_SE term
-    beta: float = 0.5       # weight on delta_RSS_post proxy term
-    gamma: float = 2.0      # weight on oscillation penalty -- kept high, since
-                              # blueprint explicitly wants ping-pong "violently penalized"
+    alpha: float = 1.0      
+    beta: float = 0.5       
+    # Lowered from 2.0 to 1.0. Allows the network room to make mistakes early on.
+    gamma: float = 1.0      
 
-    tau_trace: float = 20.0     # timesteps; pre-synaptic eligibility trace decay
-    trace_decay: float = 0.9    # per-step decay of eligibility trace (~ exp(-1/tau_trace))
-    lr: float = 0.01            # learning rate scaling the reward-modulated update
-    weight_clip: float = 5.0    # hard bound on any single weight, prevents runaway growth
-                                  # from repeated same-sign rewards (STDP has no normalization
-                                  # built in, unlike backprop's implicit gradient balancing)
+    tau_trace: float = 20.0     
+    trace_decay: float = 0.9    
+    lr: float = 0.01            
+    weight_clip: float = 5.0    
 
-    class_weight_hold: float = 1.0       # reward scaling for correctly HOLDING
-    class_weight_shift: float = 8.0      # reward scaling for correctly matching a SHIFT
-                                           # action -- compensates for the ~500:1 hold/shift
-                                           # class imbalance found in the dataset; without this,
-                                           # R-STDP mostly reinforces "always hold" since that's
-                                           # correct 99.5% of the time by raw frequency.
+    class_weight_hold: float = 1.0       
+    # Increased from 8.0 to 50.0. A correct shift is now a massive, network-altering reward.
+    class_weight_shift: float = 50.0      
 
-    exploration_eps_start: float = 0.5   # probability of forcing the ORACLE's action-neuron
-                                           # to be credited for this window's STDP update,
-                                           # instead of whichever neuron naturally spiked first.
-                                           # WITHOUT this, a neuron that never fires can never
-                                           # build an eligibility trace and can never be
-                                           # reinforced -- STDP only updates weights for neurons
-                                           # that actually spike (found during validation: an
-                                           # untrained net can get permanently stuck always
-                                           # firing the same wrong neuron, with zero mechanism
-                                           # to ever learn the correct one).
-    exploration_eps_end: float = 0.05    # exploration floor -- never fully turned off, so
-                                           # rare action classes keep getting occasional
-                                           # reinforcement opportunities even late in training
-    exploration_decay_steps: int = 2000  # linear decay from start to end over this many
-                                           # train_on_window() calls
+    exploration_eps_start: float = 0.5   
+    exploration_eps_end: float = 0.05    
+    # Increased from 2000 to 25000. Exploration now spans the entirety of Epoch 1.
+    exploration_decay_steps: int = 25000
 
 
 class RSTDPTrainer:

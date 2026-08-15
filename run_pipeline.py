@@ -64,7 +64,18 @@ def save_checkpoint(
     epoch: int,
     metrics: Optional[Dict[str, Any]] = None,
 ) -> None:
-    """Persist model weights, optimizer/trainer state, and metadata to disk."""
+    """Persist model weights, optimizer/trainer state, and metadata to disk.
+
+    Writes to a temporary file first, verifies it by reloading, and only
+    then atomically replaces the real checkpoint path. This guards against
+    silent corruption (found during real-world testing: a checkpoint saved
+    directly to its final path came back as a truncated ~683-byte zip shell
+    containing only PyTorch's internal bookkeeping files, no actual model
+    weights -- likely caused by the process being interrupted mid-write).
+    With this approach, the final checkpoint path either contains a
+    verified-complete checkpoint or doesn't exist at all; it's never left
+    holding a corrupt partial file.
+    """
     checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
     
     # Extract model state dict cleanly
@@ -94,8 +105,28 @@ def save_checkpoint(
         "timestamp": time.time(),
     }
 
-    torch.save(checkpoint, checkpoint_path)
-    print(f"\n[Checkpoint] Saved trained model to: {checkpoint_path}")
+    tmp_path = checkpoint_path.with_suffix(checkpoint_path.suffix + ".tmp")
+    try:
+        torch.save(checkpoint, tmp_path)
+
+        # Verify by reloading before committing -- catches truncated/corrupt
+        # writes immediately instead of discovering them later when someone
+        # tries to actually use the checkpoint.
+        verify = torch.load(tmp_path, map_location="cpu", weights_only=False)
+        required_keys = {"epoch", "model_state", "arch_config", "rstdp_config"}
+        missing = required_keys - set(verify.keys())
+        if missing:
+            raise RuntimeError(f"checkpoint verification failed -- missing keys: {missing}")
+
+        tmp_path.replace(checkpoint_path)  # atomic on POSIX and Windows (same filesystem)
+        print(f"\n[Checkpoint] Saved and verified: {checkpoint_path}")
+    except Exception as e:
+        if tmp_path.exists():
+            tmp_path.unlink()
+        raise RuntimeError(
+            f"Checkpoint save FAILED verification and was NOT written to {checkpoint_path}. "
+            f"No corrupt file left behind. Original error: {e}"
+        ) from e
 
 
 def load_checkpoint(

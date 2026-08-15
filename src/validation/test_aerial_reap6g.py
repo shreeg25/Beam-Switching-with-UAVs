@@ -14,7 +14,7 @@ scoped out). It's the minimum synthetic signal needed to check that:
 """
 
 import torch
-from aerial_reap6g import AerialREAP6G, ArchitectureConfig, BEAM_ACTIONS
+from src.architecture.aerial_reap6g import AerialREAP6G, ArchitectureConfig, BEAM_ACTIONS
 
 torch.manual_seed(0)
 

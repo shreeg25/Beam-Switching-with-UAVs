@@ -64,10 +64,10 @@ class RSTDPConfig:
 
     tau_trace: float = 20.0     
     trace_decay: float = 0.9    
-    lr: float = 0.01            
+    lr: float = 0.1            
     weight_clip: float = 5.0    
 
-    class_weight_hold: float = 1.0       
+    class_weight_hold: float = 0.0       
     # Increased from 8.0 to 50.0. A correct shift is now a massive, network-altering reward.
     class_weight_shift: float = 50.0      
 

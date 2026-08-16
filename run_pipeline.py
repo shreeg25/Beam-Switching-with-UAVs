@@ -136,8 +136,9 @@ def load_checkpoint(
     if not checkpoint_path.exists():
         raise FileNotFoundError(f"Checkpoint file not found: {checkpoint_path}")
 
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"\n[Checkpoint] Loading state from: {checkpoint_path}")
-    checkpoint = torch.load(checkpoint_path, map_location="cpu")
+    checkpoint = torch.load(checkpoint_path, map_location=device)
 
     arch_cfg_dict = checkpoint["arch_config"]
     rstdp_cfg_dict = checkpoint["rstdp_config"]
@@ -145,7 +146,8 @@ def load_checkpoint(
     arch_config = ArchitectureConfig(**arch_cfg_dict)
     rstdp_config = RSTDPConfig(**rstdp_cfg_dict)
 
-    model = AerialREAP6G(arch_config)
+# Instantiate and push model to CUDA
+    model = AerialREAP6G(arch_config).to(device)
     if hasattr(model, "load_state_dict"):
         model.load_state_dict(checkpoint["model_state"])
     elif hasattr(model, "weights"):
@@ -332,9 +334,14 @@ def main() -> None:
     if args.load_checkpoint and args.load_checkpoint.exists():
         model, trainer, arch_config, rstdp_config, _ = load_checkpoint(args.load_checkpoint)
     else:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        print(f"\n[Init] Initializing new model on {device}")
+        
         arch_config = ArchitectureConfig(hidden_dim=args.hidden_dim)
         rstdp_config = RSTDPConfig()
-        model = AerialREAP6G(arch_config)
+        
+        # Push to GPU immediately
+        model = AerialREAP6G(arch_config).to(device)
         trainer = RSTDPTrainer(model, rstdp_config)
 
     # Mode: Train

@@ -103,8 +103,9 @@ class RSTDPTrainer:
         actually learned, not exploration-assisted behavior. Returns the
         action index (defaults to 'hold' if the network never fires).
         """
-        delta_q = torch.from_numpy(delta_q_np).float().unsqueeze(1)
-        delta_rss = torch.from_numpy(delta_rss_np).float().unsqueeze(1)
+        device = next(self.model.parameters()).device
+        delta_q = torch.from_numpy(delta_q_np).float().to(device).unsqueeze(1)
+        delta_rss = torch.from_numpy(delta_rss_np).float().to(device).unsqueeze(1)
         out = self.model(delta_q, delta_rss)
         winner_idx = out["winner_idx"][0].item()
         return winner_idx if winner_idx >= 0 else BEAM_ACTIONS.index("hold")
@@ -166,13 +167,16 @@ class RSTDPTrainer:
         """
         cfg = self.cfg
         T = delta_q.shape[0]
+        device = delta_q.device
 
         with torch.no_grad():
             # Pre-synaptic traces for the two input pathways, and for the
             # hidden-layer activity feeding the readout fc layer.
-            trace_kin = torch.zeros(delta_q.shape[1])
-            trace_rf = torch.zeros(delta_rss.shape[1])
-            trace_hidden = torch.zeros(self.model.cfg.hidden_dim)
+            # Force all traces directly onto the GPU
+            trace_kin = torch.zeros(delta_q.shape[1], device=device)
+            trace_rf = torch.zeros(delta_rss.shape[1], device=device)
+            trace_hidden = torch.zeros(self.model.cfg.hidden_dim, device=device)
+            elig_fc = torch.zeros_like(self.model.membrane.fc.weight)
 
             elig_fc = torch.zeros_like(self.model.membrane.fc.weight)
 
@@ -184,7 +188,8 @@ class RSTDPTrainer:
                 # hidden activity: recompute the same fused-current forward
                 # pass this timestep would have produced (cheap, no grad),
                 # needed as the "pre-synaptic" signal for the fc layer.
-                gain_t = torch.ones(1)  # gain is a scalar multiplier already applied
+                # Force the dummy gain tensor onto the GPU
+                gain_t = torch.ones(1, device=device)  # gain is a scalar multiplier already applied
                                           # upstream in the real forward pass; for the
                                           # trace we use unit gain as a simplification,
                                           # since STDP eligibility only needs RELATIVE
@@ -250,8 +255,9 @@ class RSTDPTrainer:
         credited eligibility trace is still built from real activity in
         this window, not synthetic data.
         """
-        delta_q = torch.from_numpy(delta_q_np).float().unsqueeze(1)     # (T, 1, 4)
-        delta_rss = torch.from_numpy(delta_rss_np).float().unsqueeze(1)  # (T, 1, 1)
+        device = next(self.model.parameters()).device
+        delta_q = torch.from_numpy(delta_q_np).float().to(device).unsqueeze(1)
+        delta_rss = torch.from_numpy(delta_rss_np).float().to(device).unsqueeze(1)
 
         out = self.model(delta_q, delta_rss)
         winner_idx = out["winner_idx"][0].item()

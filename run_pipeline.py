@@ -169,22 +169,58 @@ def run_training(
     train_data: Dict[str, np.ndarray],
     epochs: int,
     log_interval: int = 500,
+    shift_oversample_factor: int = 15,
 ) -> None:
-    """Execute the R-STDP training loop over the specified number of epochs."""
+    """Execute the R-STDP training loop over the specified number of epochs.
+
+    shift_oversample_factor: how many times each "shift"-labeled window (any
+    label != hold) is replayed per epoch, relative to hold windows (replayed
+    once each). Found necessary during real-scale validation: at the raw
+    ~186:1 hold:shift ratio in this dataset, exploration-forced reinforcement
+    alone produced only ~6 real shift-reinforcement events across an entire
+    2-epoch/47,040-step run -- nowhere near enough for STDP's eligibility
+    trace to build a durable weight change before the next hold-reinforcement
+    overwrote it. The network converged to a degenerate always-predict-hold
+    policy (99.5% overall accuracy, 0% recall on every real disturbance).
+    Oversampling shift windows directly increases their exposure count
+    without touching the (now-correct, symmetric) reward function. A factor
+    of 15 was chosen as a middle ground -- brings the effective ratio down to
+    roughly 12:1 (from ~186:1) without replaying the ~126 distinct shift
+    windows so many times per epoch that the network just memorizes them.
+    """
     delta_q = train_data["delta_q"]
     delta_rss = train_data["delta_rss"]
     oracle_action = train_data["oracle_action_idx"]
     n_samples = delta_q.shape[0]
 
+    # Identify shift-labeled windows (final timestep's oracle label != hold)
+    # for oversampling. Uses BEAM_ACTIONS' "hold" index directly rather than
+    # a bare 0, in case the action ordering ever changes.
+    from src.architecture.aerial_reap6g import BEAM_ACTIONS
+    hold_idx = BEAM_ACTIONS.index("hold")
+    final_labels = oracle_action[:, -1]
+    shift_mask = final_labels != hold_idx
+    hold_indices = np.where(~shift_mask)[0]
+    shift_indices = np.where(shift_mask)[0]
+
     print("\n" + "=" * 80)
-    print(f">>> [STAGE 5] Starting R-STDP Training ({epochs} Epochs, {n_samples} Samples/Epoch)")
+    print(f">>> [STAGE 5] Starting R-STDP Training ({epochs} Epochs, {n_samples} Base Samples/Epoch)")
+    print(f">>> Class balance: {len(hold_indices)} hold, {len(shift_indices)} shift "
+          f"(oversampling shift x{shift_oversample_factor} -> "
+          f"{len(hold_indices)}:{len(shift_indices) * shift_oversample_factor} effective ratio "
+          f"~{len(hold_indices) / max(1, len(shift_indices) * shift_oversample_factor):.1f}:1)")
     print("=" * 80)
 
     for epoch in range(1, epochs + 1):
         t0 = time.time()
-        # Optional sample shuffling per epoch
-        indices = np.random.permutation(n_samples)
-        
+        # Oversampled epoch order: every hold window once, every shift window
+        # shift_oversample_factor times, then shuffled together so oversampled
+        # examples aren't clustered at the start/end of the epoch.
+        oversampled_shift = np.tile(shift_indices, shift_oversample_factor)
+        epoch_indices = np.concatenate([hold_indices, oversampled_shift])
+        indices = np.random.permutation(epoch_indices)
+        n_epoch_samples = len(indices)
+
         for step, idx in enumerate(indices):
             trainer.train_on_window(
                 delta_q[idx],
@@ -192,17 +228,18 @@ def run_training(
                 oracle_action[idx],
             )
 
-            if (step + 1) % log_interval == 0 or (step + 1) == n_samples:
-                progress = ((step + 1) / n_samples) * 100
+            if (step + 1) % log_interval == 0 or (step + 1) == n_epoch_samples:
+                progress = ((step + 1) / n_epoch_samples) * 100
                 print(
-                    f"Epoch [{epoch}/{epochs}] | Step [{step + 1}/{n_samples}] ({progress:.1f}%) "
+                    f"Epoch [{epoch}/{epochs}] | Step [{step + 1}/{n_epoch_samples}] ({progress:.1f}%) "
                     f"| Sample Delta-RSS: {float(np.mean(delta_rss[idx])):.4f}",
                     end="\r",
                     flush=True,
                 )
 
+
         elapsed = time.time() - t0
-        print(f"\nEpoch [{epoch}/{epochs}] Completed in {elapsed:.2f}s ({n_samples / elapsed:.1f} samples/s)")
+        print(f"\nEpoch [{epoch}/{epochs}] Completed in {elapsed:.2f}s ({n_epoch_samples / elapsed:.1f} samples/s)")
 
 
 def main() -> None:
@@ -238,6 +275,15 @@ def main() -> None:
     # Training Configuration
     parser.add_argument("--epochs", type=int, default=3, help="Number of training epochs over the dataset.")
     parser.add_argument("--log-interval", type=int, default=500, help="Training progress logging frequency.")
+    parser.add_argument(
+        "--shift-oversample-factor",
+        type=int,
+        default=15,
+        help="How many times each shift-labeled (non-hold) window is replayed per epoch, "
+             "relative to hold windows (once each). Compensates for extreme class imbalance "
+             "(~186:1 in this dataset) -- without it, real disturbance events get too few "
+             "reinforcement opportunities for R-STDP to learn them at all.",
+    )
 
     # Checkpoint Configuration
     parser.add_argument(
@@ -306,6 +352,7 @@ def main() -> None:
             train_data=d_train,
             epochs=args.epochs,
             log_interval=args.log_interval,
+            shift_oversample_factor=args.shift_oversample_factor,
         )
 
         save_checkpoint(

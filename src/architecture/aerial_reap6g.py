@@ -41,24 +41,21 @@ NUM_ACTIONS = len(BEAM_ACTIONS)
 
 @dataclass
 class ArchitectureConfig:
-    """All architecture hyperparameters in one place, matched to blueprint symbols."""
-
-    quat_dim: int = 4          # Δq: quaternion delta (w, x, y, z)
-    rss_dim: int = 1           # ΔRSS: scalar signal delta
-    hidden_dim: int = 32       # size of the fused-current -> pre-LIF projection
+    quat_dim: int = 4          
+    rss_dim: int = 1           
+    hidden_dim: int = 32       
     num_actions: int = NUM_ACTIONS
 
-    beta: float = 0.9          # β: LIF membrane leak factor
-    v_th: float = 1.0          # V_th: firing threshold
-    reset_mechanism: str = "zero"  # snnTorch reset mode after spike
+    # Lowered from 0.9 to 0.5. Forces the membrane to bleed off noise rapidly.
+    beta: float = 0.5          
+    v_th: float = 1.0          
+    reset_mechanism: str = "zero"  
 
-    gain_eps: float = 1e-3     # (unused by AdaptiveGainController; kept for backward-compat)
-    gain_window: int = 10      # rolling window (timesteps) used to estimate Variance(ΔRSS)
-    gain_clip: float = 50.0    # hard ceiling on G_t to bound worst-case current spikes
-    noise_floor_var: float = 0.01  # calibrated ΔRSS variance during genuinely calm flight;
-                                    # variance is floored here so G_t doesn't explode when
-                                    # the channel is merely quiet rather than actually stable
-
+    gain_eps: float = 1e-3     
+    gain_window: int = 10      
+    gain_clip: float = 50.0    
+    noise_floor_var: float = 0.01  
+    
     device: str = "cpu"
 
 
@@ -229,8 +226,8 @@ class FirstToSpikeWTA(nn.Module):
                         (-1 if no spike occurred)
         """
         T, B, N = spk_seq.shape
-        winner_idx = torch.full((B,), -1, dtype=torch.long)
-        winner_time = torch.full((B,), -1, dtype=torch.long)
+        winner_idx = torch.full((B,), -1, dtype=torch.long, device=spk_seq.device)
+        winner_time = torch.full((B,), -1, dtype=torch.long, device=spk_seq.device)
 
         for b in range(B):
             fired = False

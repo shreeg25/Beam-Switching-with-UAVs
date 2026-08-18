@@ -303,3 +303,80 @@ class RSTDPTrainer:
             "correct": natural_action_idx == oracle_action_idx,  # network's OWN (unforced) correctness
             "fired": winner_idx >= 0,
         }
+
+    # -- BATCHED training path (see prior analysis notes) --------------------
+    def train_on_batch(self, delta_q_np, delta_rss_np, oracle_actions_np):
+        device = next(self.model.parameters()).device
+        B, T, _ = delta_q_np.shape
+        delta_q = torch.from_numpy(delta_q_np).float().to(device).transpose(0, 1)
+        delta_rss = torch.from_numpy(delta_rss_np).float().to(device).transpose(0, 1)
+
+        out = self.model(delta_q, delta_rss)
+        winner_idx = out["winner_idx"]
+        winner_time = out["winner_time"]
+        natural_action_idx = torch.where(
+            winner_idx >= 0, winner_idx, torch.full_like(winner_idx, BEAM_ACTIONS.index("hold"))
+        )
+        oracle_action_idx = torch.from_numpy(oracle_actions_np[:, -1]).long().to(device)
+
+        eps = self._current_exploration_eps()
+        explore_mask = (torch.rand(B, device=device) < eps) & (oracle_action_idx != natural_action_idx)
+        spk_seq_for_update = out["spk_seq"].clone()
+        explore_indices = torch.nonzero(explore_mask, as_tuple=False).squeeze(-1)
+        for b in explore_indices.tolist():
+            credit_t = winner_time[b].item()
+            if credit_t < 0:
+                credit_t = T - 1
+            spk_seq_for_update[credit_t, b] = 0.0
+            spk_seq_for_update[credit_t, b, oracle_action_idx[b]] = 1.0
+        reported_action_idx = torch.where(explore_mask, oracle_action_idx, natural_action_idx)
+
+        rewards = torch.empty(B, device=device)
+        for b in range(B):
+            r = self._compute_reward(
+                int(reported_action_idx[b].item()), int(oracle_action_idx[b].item()), delta_rss_np[b, :, 0]
+            )
+            rewards[b] = r
+
+        self._stdp_update_batch(delta_q, delta_rss, spk_seq_for_update, rewards)
+        self._n_updates += B
+        self.action_history.extend(natural_action_idx.tolist())
+        if len(self.action_history) > 100:
+            self.action_history = self.action_history[-100:]
+
+        correct = (natural_action_idx == oracle_action_idx)
+        return {"mean_reward": rewards.mean().item(), "accuracy": correct.float().mean().item()}
+
+    def _stdp_update_batch(self, delta_q, delta_rss, spk_seq, rewards):
+        cfg = self.cfg
+        T, B, _ = delta_q.shape
+        device = delta_q.device
+        with torch.no_grad():
+            trace_kin = torch.zeros(B, delta_q.shape[2], device=device)
+            trace_rf = torch.zeros(B, delta_rss.shape[2], device=device)
+            trace_hidden = torch.zeros(B, self.model.cfg.hidden_dim, device=device)
+            elig_fc = torch.zeros(B, self.model.cfg.num_actions, self.model.cfg.hidden_dim, device=device)
+
+            for t in range(T):
+                trace_kin = cfg.trace_decay * trace_kin + delta_q[t]
+                trace_rf = cfg.trace_decay * trace_rf + delta_rss[t]
+                hidden_t = self.model.current_layer.W_kin(delta_q[t]) + self.model.current_layer.W_rf(delta_rss[t])
+                trace_hidden = cfg.trace_decay * trace_hidden + hidden_t
+                spikes_t = spk_seq[t]
+                elig_fc += torch.einsum("ba,bh->bah", spikes_t, trace_hidden)
+
+            hidden_credit = elig_fc.sum(dim=1)
+            elig_kin_per_item = torch.einsum("bh,bk->bhk", hidden_credit, trace_kin)
+            elig_rf_per_item = torch.einsum("bh,br->bhr", hidden_credit, trace_rf)
+
+            elig_fc_final = torch.einsum("bah,b->ah", elig_fc, rewards)
+            elig_kin_final = torch.einsum("bhk,b->hk", elig_kin_per_item, rewards)
+            elig_rf_final = torch.einsum("bhr,b->hr", elig_rf_per_item, rewards)
+
+            self.model.current_layer.W_kin.weight += cfg.lr * elig_kin_final
+            self.model.current_layer.W_rf.weight += cfg.lr * elig_rf_final
+            self.model.membrane.fc.weight += cfg.lr * elig_fc_final
+
+            self.model.current_layer.W_kin.weight.clamp_(-cfg.weight_clip, cfg.weight_clip)
+            self.model.current_layer.W_rf.weight.clamp_(-cfg.weight_clip, cfg.weight_clip)
+            self.model.membrane.fc.weight.clamp_(-cfg.weight_clip, cfg.weight_clip) 

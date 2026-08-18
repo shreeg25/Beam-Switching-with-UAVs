@@ -223,22 +223,28 @@ def run_training(
         indices = np.random.permutation(epoch_indices)
         n_epoch_samples = len(indices)
 
-        for step, idx in enumerate(indices):
-            trainer.train_on_window(
-                delta_q[idx],
-                delta_rss[idx],
-                oracle_action[idx],
+        batch_size = 128  # process 128 windows per GPU forward/backward pass instead of
+                           # one at a time -- this is what actually uses the GPU (see
+                           # train_on_batch's docstring in rstdp_trainer.py for why
+                           # per-window .to(device) calls alone don't help)
+
+        for step_start in range(0, n_epoch_samples, batch_size):
+            step_end = min(step_start + batch_size, n_epoch_samples)
+            batch_idx = indices[step_start:step_end]
+
+            trainer.train_on_batch(
+                delta_q[batch_idx],
+                delta_rss[batch_idx],
+                oracle_action[batch_idx],
             )
 
-            if (step + 1) % log_interval == 0 or (step + 1) == n_epoch_samples:
-                progress = ((step + 1) / n_epoch_samples) * 100
+            if (step_end % log_interval < batch_size) or step_end == n_epoch_samples:
+                progress = (step_end / n_epoch_samples) * 100
                 print(
-                    f"Epoch [{epoch}/{epochs}] | Step [{step + 1}/{n_epoch_samples}] ({progress:.1f}%) "
-                    f"| Sample Delta-RSS: {float(np.mean(delta_rss[idx])):.4f}",
+                    f"Epoch [{epoch}/{epochs}] | Step [{step_end}/{n_epoch_samples}] ({progress:.1f}%)",
                     end="\r",
                     flush=True,
                 )
-
 
         elapsed = time.time() - t0
         print(f"\nEpoch [{epoch}/{epochs}] Completed in {elapsed:.2f}s ({n_epoch_samples / elapsed:.1f} samples/s)")

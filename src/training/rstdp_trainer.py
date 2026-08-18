@@ -59,21 +59,24 @@ from src.dataset.channel_model import ChannelParams
 class RSTDPConfig:
     alpha: float = 1.0      
     beta: float = 0.5       
-    # Lowered from 2.0 to 1.0. Allows the network room to make mistakes early on.
     gamma: float = 1.0      
 
     tau_trace: float = 20.0     
     trace_decay: float = 0.9    
-    lr: float = 0.1            
-    weight_clip: float = 5.0    
+    
+    # [FIX 1] Lowered from 0.1 to stop the violent gradient explosion
+    lr: float = 0.01            
+    
+    # [FIX 2] Raised from 5.0 to 15.0 to give the weights breathing room
+    weight_clip: float = 15.0    
 
     class_weight_hold: float = 0.0       
-    # Increased from 8.0 to 50.0. A correct shift is now a massive, network-altering reward.
-    class_weight_shift: float = 50.0      
+    
+    # [FIX 3] Lowered from 50.0 to 20.0 to stabilize the reward multiplier
+    class_weight_shift: float = 20.0      
 
     exploration_eps_start: float = 0.5   
     exploration_eps_end: float = 0.05    
-    # Increased from 2000 to 25000. Exploration now spans the entirety of Epoch 1.
     exploration_decay_steps: int = 25000
 
 

@@ -48,7 +48,7 @@ class ArchitectureConfig:
 
     # Lowered from 0.9 to 0.5. Forces the membrane to bleed off noise rapidly.
     beta: float = 0.5          
-    v_th: float = 1.0          
+    v_th: float = 0.05          
     reset_mechanism: str = "zero"  
 
     gain_eps: float = 1e-3     

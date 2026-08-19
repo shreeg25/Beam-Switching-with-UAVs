@@ -148,7 +148,6 @@ class FusedCurrentLayer(nn.Module):
         super().__init__()
         self.W_kin = nn.Linear(cfg.quat_dim, cfg.hidden_dim, bias=False)
         self.W_rf = nn.Linear(cfg.rss_dim, cfg.hidden_dim, bias=False)
-        self.bias = nn.Parameter(torch.zeros(cfg.hidden_dim))
 
     def forward(
         self,
@@ -159,7 +158,7 @@ class FusedCurrentLayer(nn.Module):
         kin_term = self.W_kin(delta_q)              # (T, B, hidden_dim)
         rf_term = self.W_rf(delta_rss)               # (T, B, hidden_dim)
         gated_kin = gain.unsqueeze(-1) * kin_term    # saturation guard on IMU path only
-        return gated_kin + rf_term + self.bias
+        return torch.relu(gated_kin + rf_term) 
 
 
 # ---------------------------------------------------------------------------
@@ -174,7 +173,9 @@ class LIFMembrane(nn.Module):
 
     def __init__(self, cfg: ArchitectureConfig):
         super().__init__()
-        self.fc = nn.Linear(cfg.hidden_dim, cfg.num_actions)
+        self.fc = nn.Linear(cfg.hidden_dim, cfg.num_actions, bias=False)
+        with torch.no_grad():
+            self.fc.weight[0, :] = 0.0
         self.lif = snn.Leaky(
             beta=cfg.beta,
             threshold=cfg.v_th,

@@ -70,10 +70,10 @@ class RSTDPConfig:
     # [FIX 2] Raised from 5.0 to 15.0 to give the weights breathing room
     weight_clip: float = 5.0    
 
-    class_weight_hold: float = 0.0       
+    class_weight_hold: float = 1.0       
     
     # [FIX 3] Lowered from 50.0 to 20.0 to stabilize the reward multiplier
-    class_weight_shift: float = 20.0      
+    class_weight_shift: float = 50.0      
 
     exploration_eps_start: float = 0.5   
     exploration_eps_end: float = 0.05    
@@ -123,22 +123,16 @@ class RSTDPTrainer:
         self, chosen_action_idx: int, oracle_action_idx: int, delta_rss_window: np.ndarray
     ) -> float:
         cfg = self.cfg
-
-        # delta_SE proxy: Shannon capacity is monotonic in SNR/RSS, so a
-        # correct (oracle-matching) action gets positive delta_SE credit,
-        # scaled by how much RSS was actually fluctuating in this window
-        # (a correction matters more when the channel was genuinely volatile).
         rss_volatility = float(np.std(delta_rss_window))
         correct = (chosen_action_idx == oracle_action_idx)
-        delta_se = rss_volatility if correct else -rss_volatility
+        
+        # [FIX 1] Aggressive LTD for false positives. Overpower the tiny volatility.
+        delta_se = rss_volatility if correct else -max(rss_volatility, 0.5)
 
-        # delta_RSS_post proxy: reward being in the right NEIGHBORHOOD of the
-        # oracle action even if not exact (adjacent shifts in BEAM_ACTIONS
-        # ordering are more forgivable than a wrong-direction shift).
+        # [FIX 2] Kill the participation trophy. Make it strictly negative for errors.
         idx_distance = abs(chosen_action_idx - oracle_action_idx)
-        delta_rss_post = 1.0 / (1.0 + idx_distance)
+        delta_rss_post = 1.0 if correct else -float(idx_distance)
 
-        # Omega: ping-pong penalty from the network's OWN action history.
         omega = 0.0
         if len(self.action_history) >= 2:
             if chosen_action_idx == self.action_history[-2] and chosen_action_idx != self.action_history[-1]:
@@ -146,10 +140,6 @@ class RSTDPTrainer:
 
         reward = cfg.alpha * delta_se + cfg.beta * delta_rss_post - cfg.gamma * omega
 
-        # Class-imbalance compensation: scale reward magnitude up when the
-        # oracle action is a real shift, not hold -- otherwise R-STDP mostly
-        # reinforces "always hold" since that's correct ~99.5% of the time
-        # by raw frequency (see RSTDPConfig.class_weight_shift docstring).
         is_shift = oracle_action_idx != BEAM_ACTIONS.index("hold")
         reward *= cfg.class_weight_shift if is_shift else cfg.class_weight_hold
 
@@ -184,33 +174,20 @@ class RSTDPTrainer:
             elig_fc = torch.zeros_like(self.model.membrane.fc.weight)
 
             for t in range(T):
-                # decay and accumulate pre-synaptic traces
                 trace_kin = cfg.trace_decay * trace_kin + delta_q[t]
                 trace_rf = cfg.trace_decay * trace_rf + delta_rss[t]
-
-                # hidden activity: recompute the same fused-current forward
-                # pass this timestep would have produced (cheap, no grad),
-                # needed as the "pre-synaptic" signal for the fc layer.
-                # Force the dummy gain tensor onto the GPU
-                gain_t = torch.ones(1, device=device)  # gain is a scalar multiplier already applied
-                                          # upstream in the real forward pass; for the
-                                          # trace we use unit gain as a simplification,
-                                          # since STDP eligibility only needs RELATIVE
-                                          # pre-synaptic activity, not the exact current.
-                hidden_t = (
+                
+                # [THE FIX] Rectify the trainer's manual trace reconstruction
+                raw_hidden = self.model.current_layer.W_kin(delta_q[t]) + self.model.current_layer.W_rf(delta_rss[t])
+                # [THE FIX] Apply ReLU here as well
+                hidden_t = torch.relu(
                     gain_t * self.model.current_layer.W_kin(delta_q[t])
                     + self.model.current_layer.W_rf(delta_rss[t])
                 )
+                
                 trace_hidden = cfg.trace_decay * trace_hidden + hidden_t
-
-                spikes_t = spk_seq[t]  # (num_actions,)
-                if spikes_t.sum() > 0:
-                    # Post-synaptic spike occurred: capture current hidden-
-                    # layer trace into the fc eligibility tensor via outer
-                    # product (this is what "STDP(Delta_t)" reduces to in an
-                    # eligibility-trace formulation -- correlate recent
-                    # pre-synaptic activity with this post-synaptic spike).
-                    elig_fc += torch.outer(spikes_t, trace_hidden)
+                spikes_t = spk_seq[t]
+                elig_fc += torch.einsum("ba,bh->bah", spikes_t, trace_hidden)
 
             # Apply reward-modulated update. W_kin/W_rf feed the shared hidden
             # layer, not per-action neurons directly, so their eligibility is

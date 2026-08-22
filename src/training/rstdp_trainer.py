@@ -70,7 +70,7 @@ class RSTDPConfig:
     # [FIX 2] Raised from 5.0 to 15.0 to give the weights breathing room
     weight_clip: float = 5.0    
 
-    class_weight_hold: float = 1.0       
+    class_weight_hold: float = 0.0       
     
     # [FIX 3] Lowered from 50.0 to 20.0 to stabilize the reward multiplier
     class_weight_shift: float = 50.0      
@@ -195,7 +195,8 @@ class RSTDPTrainer:
             # projected back through fc's connectivity (a standard credit-
             # assignment approximation for a 2-layer spiking readout without
             # backprop).
-            hidden_credit = elig_fc.sum(dim=0)  # (hidden_dim,) how much each
+            total_spikes = spk_seq.sum(dim=0)
+            hidden_credit = torch.einsum("a,ah->h", total_spikes, self.model.membrane.fc.weight)  # (hidden_dim,) how much each
                                                   # hidden unit contributed to firing
             elig_kin = torch.outer(hidden_credit, trace_kin)
             elig_rf = torch.outer(hidden_credit, trace_rf)
@@ -345,7 +346,11 @@ class RSTDPTrainer:
                 spikes_t = spk_seq[t]
                 elig_fc += torch.einsum("ba,bh->bah", spikes_t, trace_hidden)
 
-            hidden_credit = elig_fc.sum(dim=1)
+            # [THE FIX] Project output spikes back through the synaptic weights!
+            # This breaks symmetry and forces the 32 neurons to specialize.
+            total_spikes = spk_seq.sum(dim=0)  # Shape: (B, num_actions)
+            hidden_credit = torch.einsum("ba,ah->bh", total_spikes, self.model.membrane.fc.weight)
+            
             elig_kin_per_item = torch.einsum("bh,bk->bhk", hidden_credit, trace_kin)
             elig_rf_per_item = torch.einsum("bh,br->bhr", hidden_credit, trace_rf)
 
